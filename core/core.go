@@ -1,29 +1,44 @@
 package core
 
 import (
+	"bytes"
+	"github.com/pkg/errors"
+	"github.com/robfig/cron/v3"
+	"github.com/soxft/gitea-backuper/backup"
+	"github.com/soxft/gitea-backuper/config"
+	"github.com/soxft/gitea-backuper/tool"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
+	"os/user"
+	"strconv"
 	"syscall"
-
-	"github.com/robfig/cron/v3"
-	"github.com/soxft/db-backuper/backup"
-	"github.com/soxft/db-backuper/config"
-	"github.com/soxft/db-backuper/db"
-	"github.com/soxft/db-backuper/tool"
 )
 
 func Run() {
+
+	// check work dir and Local exists
+	if err := tool.PathExists(config.Gitea.WorkDir); err != nil {
+		log.Fatalf("WorkDir %s not exists: %v", config.Gitea.WorkDir, err)
+		return
+	}
+	if err := tool.PathExists(config.Local.Dir); err != nil {
+		log.Fatalf("LocalDir %s not exists: %v", config.Local.Dir, err)
+		return
+	}
+
+	// start cron
 	c := cron.New()
 
-	if _, err := c.AddFunc(config.Gitea.Cron, cronFunc()); err != nil {
+	if _, err := c.AddFunc(config.Gitea.Cron, coreFunc); err != nil {
 		log.Fatalf("Add Cron error: %v", err)
 	} else {
 		log.Printf("Cron added: %s", config.Gitea.Cron)
 	}
 	c.Start()
 
-	// wait for interrupt signal to gracefully shutdown the server with
+	// wait for interrupt signal to gracefully shut down the server with
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
@@ -31,55 +46,127 @@ func Run() {
 	log.Println("Bye! :)")
 }
 
-func cronFunc() func() {
-	return func() {
-		go run()
-	}
-}
-
-// backup main func
-func run() {
+// The CoreFunc
+func coreFunc() {
 	defer func() {
 		// recover
 		if err := recover(); err != nil {
-			log.Printf("%s > Backup error: %v", name, err)
+			log.Printf("error %v", err)
 		}
 	}()
 
-	if info.BackupTo == nil {
-		log.Printf("%s > BackupTo is empty", name)
+	log.Println("Start backup")
+
+	// execute gitea dump
+	_giteaBin := config.Gitea.BinPath
+
+	cmd := exec.Command(_giteaBin, "dump")
+	cmd.Dir = config.Gitea.WorkDir // select working directory
+
+	if err := withUserAttr(cmd, config.Gitea.User); err != nil {
+		log.Fatalf("error when change process user: %v", err)
+	}
+
+	// get stdout and stderr
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		log.Fatalf("cmd.Run() failed with %s\n", err)
+	}
+
+	_ = cmd.Wait()
+
+	// start process backup logic
+
+	var fList []os.DirEntry
+	if fList, err = os.ReadDir(config.Gitea.WorkDir); err != nil {
+		log.Printf("error when read dir: %v", err)
 		return
 	}
 
-	if location, err := db.MysqlDump(info.Host, info.Port, info.User, info.Pass, info.Db, config.Local.Dir); err != nil {
-		log.Printf("%s > Backup error: %v", name, err)
-	} else {
-		log.Printf("%s > Backup created: %s", name, location)
-
-		if isMethodContains(info.BackupTo, "cos") {
-			if rlocation, err := backup.ToCos(location, info.Db); err != nil {
-				log.Printf("%s > cos upload error: %v", name, err)
-			} else {
-				log.Printf("%s > cos upload success: %s", name, rlocation)
-			}
+	// 遍历fList, 匹配 gitea-dump-*.zip
+	var _dumpFileName string
+	for _, f := range fList {
+		if f.IsDir() {
+			continue
 		}
-
-		if !isMethodContains(info.BackupTo, "local") {
-			_ = os.Remove(location)
-			log.Printf("%s > local backup removed: %s", name, location)
+		if tool.GetDumpFileName(f.Name()) != "" {
+			_dumpFileName = f.Name()
 		}
-
-		// remove local backup files if max file num is set
-		tool.DeleteLocal(config.Local.Dir, config.Local.MaxFileNum)
 	}
+
+	if _dumpFileName == "" {
+		log.Println("dump file not found")
+		log.Println(stdout.String(), stderr.String())
+		return
+	}
+
+	dumpFileAbsPath := config.Gitea.WorkDir + _dumpFileName
+	localFileAbsPath := config.Local.Dir + _dumpFileName
+	log.Printf("dump file path: %s", dumpFileAbsPath)
+
+	// check dump file exists
+	if _, err := os.Stat(dumpFileAbsPath); err != nil {
+		log.Printf("dump file %s not exists, %v", dumpFileAbsPath, err)
+		return
+	}
+
+	// move dump file to local
+	err = tool.MoveFile(dumpFileAbsPath, localFileAbsPath)
+	if err != nil {
+		log.Println("error when move dump file to local", err)
+		return
+	}
+
+	log.Printf("Move dump file to local: %s", localFileAbsPath)
+
+	// remove local backup files if max file num is set
+	err = tool.DeleteLocal(config.Local.Dir, config.Local.MaxFileNum)
+	if err != nil {
+		log.Println("error when clear local backup files", err)
+		return
+	}
+
+	// Upload to remote
+	remotePath, err := backup.ToCos(localFileAbsPath)
+	if err != nil {
+		log.Println("error when upload to cos", err)
+		return
+	}
+
+	log.Printf("Upload to cos success, remote path: %s", remotePath)
+	log.Println("Backup success")
 }
 
-// isMethodContains check if method is in list
-func isMethodContains(list []string, method string) bool {
-	for _, v := range list {
-		if v == method {
-			return true
-		}
+// withUserAttr used to change process user
+func withUserAttr(cmd *exec.Cmd, name string) error {
+	// 检测用户是否存在
+	_user, err := user.Lookup(name)
+	if err != nil {
+		return errors.Wrapf(err, "invalid user %s", name)
 	}
-	return false
+
+	// 获取用户 uid
+	_uid, err := strconv.Atoi(_user.Uid)
+	if err != nil {
+		return errors.Wrapf(err, "invalid user %s", name)
+	}
+
+	// 获取用户 gid
+	_gid, err := strconv.Atoi(_user.Gid)
+	if err != nil {
+		return errors.Wrapf(err, "invalid user %s", name)
+	}
+
+	// 设置用户 uid
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{
+			Uid: uint32(_uid),
+			Gid: uint32(_gid),
+		},
+	}
+	return nil
 }

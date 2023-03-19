@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/soxft/db-backuper/config"
-	"github.com/soxft/db-backuper/core"
+	"github.com/soxft/gitea-backuper/config"
+	"github.com/soxft/gitea-backuper/core"
 )
 
 func main() {

@@ -7,14 +7,13 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/soxft/db-backuper/config"
+	"github.com/soxft/gitea-backuper/config"
 	"github.com/tencentyun/cos-go-sdk-v5"
 )
 
 // ToCos
-// @Param flocation: local file location
-// @Param dbname: database name
-func ToCos(flocation, dbname string) (string, error) {
+// flocation: local file location
+func ToCos(flocation string) (string, error) {
 	bucketURL, _ := url.Parse("https://" + config.Cos.Bucket + ".cos." + config.Cos.Region + ".myqcloud.com")
 	b := &cos.BaseURL{BucketURL: bucketURL}
 
@@ -35,7 +34,7 @@ func ToCos(flocation, dbname string) (string, error) {
 	}
 
 	// upload
-	remotePath := config.Cos.Path + dbname + "/"
+	remotePath := config.Cos.Path
 	remoteFullPath := remotePath + flocation[len(config.Local.Dir):]
 	_, err = client.Object.PutFromFile(context.Background(), remoteFullPath, flocation, nil)
 	if err != nil {
