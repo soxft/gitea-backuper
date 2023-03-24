@@ -2,7 +2,6 @@ package core
 
 import (
 	"bytes"
-	"github.com/pkg/errors"
 	"github.com/robfig/cron/v3"
 	"github.com/soxft/gitea-backuper/backup"
 	"github.com/soxft/gitea-backuper/config"
@@ -11,8 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"os/user"
-	"strconv"
 	"syscall"
 )
 
@@ -27,6 +24,9 @@ func Run() {
 		log.Fatalf("LocalDir %s not exists: %v", config.Local.Dir, err)
 		return
 	}
+
+	// 启动时立即执行一次
+	coreFunc()
 
 	// start cron
 	c := cron.New()
@@ -63,10 +63,6 @@ func coreFunc() {
 	cmd := exec.Command(_giteaBin, "dump")
 	cmd.Dir = config.Gitea.WorkDir // select working directory
 
-	if err := withUserAttr(cmd, config.Gitea.User); err != nil {
-		log.Fatalf("error when change process user: %v", err)
-	}
-
 	// get stdout and stderr
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -74,6 +70,7 @@ func coreFunc() {
 
 	err := cmd.Run()
 	if err != nil {
+		log.Println(stdout.String(), stderr.String())
 		log.Fatalf("cmd.Run() failed with %s\n", err)
 	}
 
@@ -129,7 +126,9 @@ func coreFunc() {
 		log.Println("error when clear local backup files", err)
 		return
 	}
+	log.Printf("Clear local backup files success, max file num: %d", config.Local.MaxFileNum)
 
+	log.Println("Start upload to cos")
 	// Upload to remote
 	remotePath, err := backup.ToCos(localFileAbsPath)
 	if err != nil {
@@ -139,34 +138,4 @@ func coreFunc() {
 
 	log.Printf("Upload to cos success, remote path: %s", remotePath)
 	log.Println("Backup success")
-}
-
-// withUserAttr used to change process user
-func withUserAttr(cmd *exec.Cmd, name string) error {
-	// 检测用户是否存在
-	_user, err := user.Lookup(name)
-	if err != nil {
-		return errors.Wrapf(err, "invalid user %s", name)
-	}
-
-	// 获取用户 uid
-	_uid, err := strconv.Atoi(_user.Uid)
-	if err != nil {
-		return errors.Wrapf(err, "invalid user %s", name)
-	}
-
-	// 获取用户 gid
-	_gid, err := strconv.Atoi(_user.Gid)
-	if err != nil {
-		return errors.Wrapf(err, "invalid user %s", name)
-	}
-
-	// 设置用户 uid
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Credential: &syscall.Credential{
-			Uid: uint32(_uid),
-			Gid: uint32(_gid),
-		},
-	}
-	return nil
 }

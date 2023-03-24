@@ -15,7 +15,6 @@ type GiteaStruct struct {
 	BinPath string `yaml:"BinPath"`
 	WorkDir string `yaml:"WorkDir"`
 	Cron    string `yaml:"Cron"`
-	User    string `yaml:"User"`
 }
 
 type CosStruct struct {

@@ -6,7 +6,6 @@ Gitea:
   WorkDir: "/root/gitea/" # Gitea 工作目录, 绝对路径, 必须指定 (End With "/")
   BinPath: "/root/gitea/gitea" # Gitea 可执行文件路径, 绝对路径, 必须指定
   Cron: "0 0 * * *" # Gitea 备份定时任务, Ex: 每天凌晨 0 点
-  User: "git" # Gitea 运行用户, 必须指定
 
 Cos:
   Region: ap-hongkong

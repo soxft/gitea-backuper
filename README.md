@@ -16,3 +16,8 @@ Usage of gitea_backuper:
 ### cloud storage
 
 - Tencent Cloud COS
+
+## notice
+
+Process needs to be run by the same user as gitea
+
